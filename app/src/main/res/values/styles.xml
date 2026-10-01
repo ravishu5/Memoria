@@ -1,0 +1,15 @@
+<resources>
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item><item name="android:colorAccent">#A5A4FF</item>
+        <item name="android:windowBackground">#0B0E14</item><item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#0B0E14</item><item name="android:navigationBarColor">#0B0E14</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+    <style name="AppThemeLight" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item><item name="android:colorAccent">#6366F1</item>
+        <item name="android:windowBackground">#F7F8FD</item><item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#F7F8FD</item><item name="android:navigationBarColor">#F7F8FD</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+    <string name="capture_description">Records periodic screenshots and recognizes visible text locally for your personal activity history. No microphone or keystroke recording. Enable only after reviewing the capture disclosure in the app. Pause anytime from the app or notification.</string>
+</resources>
