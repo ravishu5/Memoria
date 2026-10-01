@@ -21,9 +21,10 @@ class CaptureFixtureActivity : Activity() {
             intent.getStringExtra("url")?.let { url -> addView(TextView(this@CaptureFixtureActivity).apply {
                 id=dev.miniscreenpipe.test.R.id.url_bar;text=url;textSize=20f
             }) }
-            if (intent.getBooleanExtra("password", false)) addView(EditText(this@CaptureFixtureActivity).apply {
+            if (intent.getBooleanExtra("password", false) || intent.getBooleanExtra("hiddenPassword",false)) addView(EditText(this@CaptureFixtureActivity).apply {
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
                 setText("test-password-never-record")
+                if(intent.getBooleanExtra("hiddenPassword",false))visibility=android.view.View.INVISIBLE
             })
         })
     }

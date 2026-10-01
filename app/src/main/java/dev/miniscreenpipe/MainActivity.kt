@@ -40,8 +40,10 @@ class MainActivity : Activity() {
     private var selectedDay: LocalDate? = LocalDate.now()
     private var query = ""
     private var answer = ""
+    private var answerModel = ""
     private var asking = false
     private var lastQuestion = ""
+    private var lastContext = ""
     private var activeRequest: Gemini.RequestControl? = null
     private var renderGeneration = 0
     private var filter: TextView? = null
@@ -55,8 +57,14 @@ class MainActivity : Activity() {
     private val ink get()=if(dark)Color.rgb(249,250,251) else Color.rgb(24,30,48)
     private val green get()=if(dark)Color.rgb(165,164,255) else Color.rgb(99,102,241)
     private val muted get()=if(dark)Color.rgb(156,163,175) else Color.rgb(105,115,137)
+    private lateinit var captureTitle:TextView
+    private fun captureHeading()=when {
+        CaptureService.instance==null -> "Capture service disconnected"
+        prefs.recording -> "Capture is active"
+        else -> "Capture is paused"
+    }
     private val ticker = object : Runnable {
-        override fun run() { if (::state.isInitialized) { state.text = CaptureService.status; toggle.text = if(prefs.recording) "Pause capture" else "Start capture" }; handler.postDelayed(this, 1500) }
+        override fun run() { if (::state.isInitialized) { state.text = CaptureService.status; if(::captureTitle.isInitialized)captureTitle.text=captureHeading(); toggle.text = if(prefs.recording) "Pause capture" else "Start capture" }; handler.postDelayed(this, 1500) }
     }
     override fun onCreate(saved: Bundle?) {
         prefs=Prefs(this)
@@ -65,7 +73,7 @@ class MainActivity : Activity() {
         if(Build.VERSION.SDK_INT>=33)onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT) { navigateBack() }
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         prefs = Prefs(this); db = HistoryDb.get(this);RetentionJob.schedule(this); background { db.prune(prefs.retention) }
-        if (saved != null) { tab = saved.getString("tab", "History");if(tab=="Viewer")tab="Timeline"; query = saved.getString("query", ""); selectedDay = saved.getString("day")?.let(LocalDate::parse); answer = saved.getString("answer", "");lastQuestion=saved.getString("question", "") }
+        if (saved != null) { tab = saved.getString("tab", "History");if(tab=="Viewer")tab="Timeline"; query = saved.getString("query", ""); selectedDay = saved.getString("day")?.let(LocalDate::parse); answer = saved.getString("answer", "");answerModel=saved.getString("answer_model", "");lastQuestion=saved.getString("question", "") }
         // Target 35 draws edge-to-edge; account for system bars explicitly.
         window.decorView.setOnApplyWindowInsetsListener { _, insets ->
             if (::page.isInitialized) { val bars = insets.getInsets(WindowInsets.Type.systemBars()); page.setPadding(dp(20), bars.top + dp(4), dp(20), bars.bottom + dp(4)) }; insets
@@ -74,7 +82,7 @@ class MainActivity : Activity() {
     }
     private fun navigateBack() { tab=when(tab) { "Viewer" -> viewerReturn;"Gemini" -> "Settings";"History" -> { finish();return };else -> "History" };render() }
     @Deprecated("Legacy Android back") override fun onBackPressed() { navigateBack() }
-    override fun onSaveInstanceState(out: Bundle) { super.onSaveInstanceState(out); out.putString("tab", tab); out.putString("query", query); out.putString("day", selectedDay?.toString()); out.putString("answer", answer);out.putString("question",lastQuestion) }
+    override fun onSaveInstanceState(out: Bundle) { super.onSaveInstanceState(out); out.putString("tab", tab); out.putString("query", query); out.putString("day", selectedDay?.toString()); out.putString("answer", answer);out.putString("answer_model",answerModel);out.putString("question",lastQuestion) }
     override fun onResume() { super.onResume();if(prefs.privacy && !unlocked) { lockPage();authenticate { unlocked=true;render() } } else if(::body.isInitialized && !asking)render() }
     override fun onStop() { super.onStop();if(prefs.privacy) { unlocked=false;activeRequest?.cancel();activeRequest=null;asking=false;dialogs.toList().forEach { it.dismiss() };lockPage() } }
     private fun toast(value:String) { Toast.makeText(this,value,Toast.LENGTH_LONG).show() }
@@ -90,7 +98,7 @@ class MainActivity : Activity() {
         if(getSystemService(android.hardware.biometrics.BiometricManager::class.java).canAuthenticate(authenticators)!=android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS) { toast("Set up a device screen lock or supported biometrics first.");if(!prefs.privacy)render();return }
         authenticating=true
         authCancellation=CancellationSignal()
-        android.hardware.biometrics.BiometricPrompt.Builder(this).setTitle("Unlock Mini Screenpipe").setAllowedAuthenticators(authenticators).build().authenticate(authCancellation!!,mainExecutor,object:android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+        android.hardware.biometrics.BiometricPrompt.Builder(this).setTitle("Unlock Aevra").setAllowedAuthenticators(authenticators).build().authenticate(authCancellation!!,mainExecutor,object:android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result:android.hardware.biometrics.BiometricPrompt.AuthenticationResult) { authenticating=false;if(!isDestroyed)success() }
             override fun onAuthenticationError(code:Int,message:CharSequence) { authenticating=false;if(!isDestroyed) { toast(message.toString());if(!prefs.privacy)render() } }
         })
@@ -158,7 +166,7 @@ class MainActivity : Activity() {
         val header=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL;setPadding(0,dp(8),0,dp(20)) }
         val subpage=tab in listOf("Gemini","Viewer","Permissions")
         if(subpage)header.addView(FrameLayout(this).apply { addView(icon("back"));setPadding(0,dp(10),dp(16),dp(10));contentDescription="Back";setOnClickListener { navigateBack() } })
-        val title=when(tab) { "History" -> "Mini Screenpipe";"Ask Gemini" -> "Search";"Viewer" -> "Memory";else -> tab }
+        val title=when(tab) { "History" -> "Aevra";"Ask Gemini" -> "Search";"Viewer" -> "Memory";else -> tab }
         header.addView(text(title,22f,ink,true),LinearLayout.LayoutParams(0,-2,1f))
         val badge=FrameLayout(this).apply { background=outlined(surface,12);setPadding(dp(10),dp(10),dp(10),dp(10));addView(icon(if(tab=="History")"lock" else "spark",18));contentDescription=if(tab=="History")"Privacy information" else "Gemini settings";setOnClickListener { tab=if(tab=="History")"Settings" else "Gemini";render() } }
         if(!subpage)header.addView(badge);page.addView(header)
@@ -181,7 +189,7 @@ class MainActivity : Activity() {
     private fun dashboard() {
         val statusCard=card();val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL }
         val dot=FrameLayout(this).apply { background=shape(if(prefs.recording)Color.rgb(24,57,41) else elevated,10);setPadding(dp(10),dp(10),dp(10),dp(10));addView(icon(if(prefs.recording)"check" else "pause",20,if(prefs.recording)success else muted)) }
-        row.addView(dot);val labels=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL;setPadding(dp(12),0,0,0);addView(text(if(prefs.recording)"Capture is active" else "Capture is paused",14f,ink,true));addView(state) };row.addView(labels,LinearLayout.LayoutParams(0,-2,1f));toggle.textSize=11f;row.addView(toggle,LinearLayout.LayoutParams(dp(92),dp(48)).apply { leftMargin=dp(8) });statusCard.addView(row)
+        row.addView(dot);val labels=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL;setPadding(dp(12),0,0,0);captureTitle=text(captureHeading(),14f,ink,true);addView(captureTitle);addView(state) };row.addView(labels,LinearLayout.LayoutParams(0,-2,1f));toggle.textSize=11f;row.addView(toggle,LinearLayout.LayoutParams(dp(92),dp(48)).apply { leftMargin=dp(8) });statusCard.addView(row)
         questionBar()
         val generation=renderGeneration
         val today=LocalDate.now();val from=today.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli();val until=today.plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
@@ -254,7 +262,7 @@ class MainActivity : Activity() {
     private fun startCapture() {
         if (!prefs.p.getBoolean("consent", false)) {
             AlertDialog.Builder(this).setTitle("Allow your phone to remember?")
-                .setMessage("Mini Screenpipe uses Android Accessibility to sample visible screens and app names, even while you use other apps. Screenshots and recognized text stay in private app storage. Password fields, locked screens, and excluded packages are skipped; filters cannot identify every sensitive screen. Android 14+ captures the active window; Android 11–13 captures the display and may include overlays.\n\nNo audio or keystrokes are recorded. Capture is visible in a notification and can be paused. Only a Gemini request you confirm sends selected text to Google.\n\nNext, enable Mini Screenpipe capture in Accessibility settings, then return and tap Start capture.")
+                .setMessage("Aevra uses Android Accessibility to sample visible screens and app names, even while you use other apps. Screenshots and recognized text stay in private app storage. Password fields, locked screens, and excluded packages are skipped; filters cannot identify every sensitive screen. Android 14+ captures the active window; Android 11–13 captures the display and may include overlays.\n\nNo audio or keystrokes are recorded. Capture is visible in a notification and can be paused. Only a Gemini request you confirm sends selected text to Google.\n\nNext, enable Aevra capture in Accessibility settings, then return and tap Start capture.")
                 .setNegativeButton("Cancel", null).setPositiveButton("Agree & enable") { _, _ -> prefs.p.edit().putBoolean("consent", true).apply(); startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }.show(); return
         }
         if (CaptureService.instance == null) { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); return }
@@ -271,27 +279,133 @@ class MainActivity : Activity() {
     private fun askPage() {
         body.addView(text("Find a moment. Connect the dots.",14f,muted));space(body,16)
         questionBar(true)
-        if(answer.isBlank() && !asking) {
+        if(asking) {
+            section("Your query")
+            val userCard = card()
+            val userHeader = LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(icon("user", 16, green))
+                addView(text("You", 12f, green, true).apply { setPadding(dp(6), 0, 0, 0) })
+            }
+            userCard.addView(userHeader)
+            space(userCard, 6)
+            userCard.addView(text(lastQuestion, 14f, ink))
+
+            section("Gemini Response")
+            val thinking=card()
+            val thinkHead=LinearLayout(this).apply {
+                gravity=Gravity.CENTER_VERTICAL
+                addView(icon("spark",16,green))
+                addView(text("✦ Gemini · ${answerModel.ifBlank { prefs.model }}",13f,green,true).apply { setPadding(dp(6),0,0,0) })
+            }
+            thinking.addView(thinkHead)
+            space(thinking,8)
+            thinking.addView(text("Analyzing memory timeline…",14f,ink,true))
+            thinking.addView(text("Retrieving FTS evidence and checking citations without hallucination.",12f,muted))
+            space(thinking,12)
+            thinking.addView(button("Cancel request") { activeRequest?.cancel();activeRequest=null;asking=false;answer="Request cancelled.";render() })
+        } else if(answer.isNotBlank()) {
+            section("Your query")
+            val userCard = card()
+            val userHeader = LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(icon("user", 16, green))
+                addView(text("You", 12f, green, true).apply { setPadding(dp(6), 0, 0, 0) })
+            }
+            userCard.addView(userHeader)
+            space(userCard, 6)
+            userCard.addView(text(lastQuestion, 14f, ink))
+
+            section("Gemini Response")
+            val reply=card()
+            val heading=LinearLayout(this).apply {
+                gravity=Gravity.CENTER_VERTICAL
+                addView(icon("spark",18,green))
+                addView(text("Gemini · ${answerModel.ifBlank { prefs.model }}",12f,green,true).apply { setPadding(dp(8),0,0,0) })
+                val count = Gemini.evidenceIds(lastContext).size
+                if(count > 0) {
+                    val pill = text("$count citations", 10f, muted).apply {
+                        background = shape(elevated, 6)
+                        setPadding(dp(8), dp(2), dp(8), dp(2))
+                    }
+                    val params = LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) }
+                    addView(pill, params)
+                }
+            }
+            reply.addView(heading);space(reply,12);reply.addView(answerView(answer));space(reply,14)
+
+            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val copyBtn = button("Copy") {
+                (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Gemini answer", answer))
+                toast("Answer copied")
+            }
+            actions.addView(copyBtn, LinearLayout.LayoutParams(0, -2, 1f))
+
+            val retryBtn = button("Retry") {
+                ask(lastQuestion, questionScope == 0)
+            }
+            actions.addView(retryBtn, LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(6) })
+
+            if(lastContext.isNotBlank()) {
+                val reviewBtn = button("Review evidence") {
+                    val preview = text(lastContext).apply { setPadding(dp(16), dp(8), dp(16), dp(8)); setTextIsSelectable(true) }
+                    val scroll = ScrollView(this).apply {
+                        layoutParams = LinearLayout.LayoutParams(-1, dp(260))
+                        addView(preview)
+                    }
+                    showDialog(AlertDialog.Builder(this)
+                        .setTitle("Evidence sent to Gemini")
+                        .setMessage("Retrieved excerpts actually submitted to Gemini:")
+                        .setView(scroll)
+                        .setPositiveButton("Close", null)
+                        .create())
+                }
+                actions.addView(reviewBtn, LinearLayout.LayoutParams(0, -2, 1.2f).apply { leftMargin = dp(6) })
+            }
+            reply.addView(actions)
+            space(reply,10)
+            reply.addView(text("Tap any [#id] citation above to view the original screen moment.",11f,muted))
+        } else {
             section("Try searching for")
             for((symbol,prompt) in listOf("text" to "What was I reading yesterday?","timeline" to "What did I look at earlier this week?","apps" to "Which apps appeared in my history?","spark" to "Summarize my day with evidence.")) {
                 val row=card();row.orientation=LinearLayout.HORIZONTAL;row.gravity=Gravity.CENTER_VERTICAL;row.background=ripple(outlined(surface,12));row.addView(icon(symbol,20,muted));row.addView(text(prompt,13f).apply { setPadding(dp(12),0,0,0) },LinearLayout.LayoutParams(0,-2,1f));row.addView(icon("chevron",14,muted));row.setOnClickListener { lastQuestion=prompt;ask(prompt,true) }
             }
-            body.addView(text("Powered by your configured Gemini model. Selected text is shared only after you review it.",11f,muted).apply { setPadding(0,dp(12),0,dp(12)) })
-        }
-        if(asking) { val thinking=card();thinking.addView(text("Connecting your memories…",14f,green,true));thinking.addView(text("Looking for an answer supported by your captured history.",12f,muted));thinking.addView(button("Cancel request") { activeRequest?.cancel();activeRequest=null;asking=false;answer="Request cancelled.";render() }) }
-        if(answer.isNotBlank()) {
-            section("Your conversation")
-            val question=text(lastQuestion,14f,ink).apply { setPadding(dp(16),dp(14),dp(16),dp(14));background=outlined(elevated,14) }
-            body.addView(question,LinearLayout.LayoutParams(-1,-2).apply { leftMargin=dp(34);bottomMargin=dp(16) })
-            val reply=card();val heading=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL;addView(icon("spark",18));addView(text("From your memories",12f,green,true).apply { setPadding(dp(8),0,0,0) }) };reply.addView(heading);space(reply,12);reply.addView(answerView(answer));space(reply,12);reply.addView(text("Tap a reference to see the original moment. AI interpretation may be wrong.",11f,muted))
+            body.addView(text("Powered by Gemini Flash-Lite (${prefs.model}). Selected text is shared only after you review it.",11f,muted).apply { setPadding(0,dp(12),0,dp(12)) })
         }
     }
     private var questionScope=0
     private fun questionBar(expanded:Boolean=false) {
         val box=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL;setPadding(0,0,0,dp(16)) };body.addView(box)
+        val modelBar = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), 0, dp(4), dp(6))
+            val badge = LinearLayout(this@MainActivity).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                background = ripple(shape(elevated, 8))
+                setPadding(dp(8), dp(4), dp(8), dp(4))
+                addView(icon("spark", 13, green))
+                addView(text("Gemini · ${prefs.model}", 11f, green, true).apply { setPadding(dp(6), 0, dp(4), 0) })
+                addView(icon("chevron", 11, muted))
+                setOnClickListener {
+                    val models = Prefs.FLASH_LITE_MODELS.toTypedArray()
+                    val current = models.indexOf(prefs.model).coerceAtLeast(0)
+                    choices("Select Gemini model", models, current) { idx ->
+                        prefs.saveModel(models[idx])
+                        render()
+                    }
+                }
+            }
+            addView(badge)
+            addView(text(if(expanded)"Grounded Memory Search" else "Timeline Intelligence", 11f, muted).apply {
+                setPadding(dp(8), 0, 0, 0)
+            })
+        }
+        box.addView(modelBar)
+
         val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL;background=outlined(elevated,14,if(expanded)green else border);setPadding(dp(12),dp(4),dp(8),dp(4)) }
         row.addView(icon("search",19,muted))
-        val field=input(if(expanded)"Ask anything about your past activity…" else "Search your memories…",lastQuestion,expanded).apply { background=null;if(expanded) { minLines=3;maxLines=5 };imeOptions=android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH }
+        val hint = if(expanded) "Ask anything about your past activity with Gemini…" else "Search your memories with Gemini…"
+        val field=input(hint,lastQuestion,expanded).apply { background=null;if(expanded) { minLines=3;maxLines=5 };imeOptions=android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH }
         row.addView(field,LinearLayout.LayoutParams(0,-2,1f))
         fun submit() { val q=field.text.toString().trim();if(q.isBlank()) { tab="Ask Gemini";render();return };lastQuestion=q;(getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).hideSoftInputFromWindow(field.windowToken,0);ask(q,if(expanded)questionScope==0 else true) }
         val send=FrameLayout(this).apply { minimumWidth=dp(48);minimumHeight=dp(48);setPadding(dp(15),dp(15),dp(15),dp(15));background=ripple(shape(Color.rgb(99,102,241),10));addView(icon("arrow",18,Color.WHITE));contentDescription="Search with Gemini";importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_YES;isFocusable=true;setOnClickListener { submit() };isEnabled=!asking }
@@ -315,7 +429,7 @@ class MainActivity : Activity() {
         body.addView(button("Delete this moment") { showDialog(AlertDialog.Builder(this).setTitle("Delete this moment?").setMessage("Remove its local text and screenshot.").setNegativeButton("Cancel",null).setPositiveButton("Delete") { _,_ -> background { db.delete(e.id);runOnUiThread { viewedEntry=null;tab="Timeline";render() } } }.create()) }.apply { setTextColor(Color.rgb(244,113,121)) })
     }
     private fun askAboutEntry(e:Entry) {
-        render();val context=Gemini.context(listOf(e),lastQuestion)
+        render();val context=EvidencePolicy.context(listOf(e),lastQuestion,preselected=true,note="User-selected single moment.")
         confirmEvidence(lastQuestion,context)
     }
     private fun permissionsPage() {
@@ -344,26 +458,38 @@ class MainActivity : Activity() {
         preparingEvidence=true
         val generation=renderGeneration; val (start,end)=if(allHistory)(0L to Long.MAX_VALUE) else range(); val querySnapshot=if(allHistory)"" else query
         background {
-            val rows=try { db.evidence(querySnapshot,start,end,question) } catch(_:Exception) { emptyList() }
-            val context=Gemini.context(rows,question)
+            val result=try { db.retrieve(querySnapshot,start,end,question) } catch(_:Exception) { null }
+            val context=result?.let { EvidencePolicy.context(it.entries,question,preselected=true,note=it.note) }.orEmpty()
             runOnUiThread {
                 preparingEvidence=false
                 if(isDestroyed || generation!=renderGeneration)return@runOnUiThread
-                if(context.isBlank()) { Toast.makeText(this,"No matching history to summarize",Toast.LENGTH_LONG).show();return@runOnUiThread }
+                if(result==null) { toast("History retrieval failed. Please retry.");return@runOnUiThread }
+                if(context.isBlank()) { toast("No matching evidence in this date scope. Try different keywords or dates.");return@runOnUiThread }
                 confirmEvidence(question,context)
             }
         }
     }
     private fun confirmEvidence(question:String,rawContext:String) {
-                val context=if(prefs.redactText)TextPrivacy.redact(rawContext).take(40000) else rawContext
-                val preview=text(context).apply { setPadding(dp(16),dp(8),dp(16),dp(8));setTextIsSelectable(true) }
+                val context=if(prefs.redactText)TextPrivacy.redact(rawContext) else rawContext
+                if(!RetrievalPolicy.fit(context)) { toast("Evidence exceeds the safe context budget. Narrow your question.");return }
+                val requestModel=prefs.model
+                val container=LinearLayout(this).apply {
+                    orientation=LinearLayout.VERTICAL
+                    setPadding(dp(20),dp(8),dp(20),0)
+                    addView(text("This shares at most 24 topic matches or 48 overview samples, bounded to 18,000 characters and 24 KB of UTF-8 text, plus your question. Only retrieved excerpts are sent to Gemini; screenshots stay local. Review the evidence below.",13f,muted))
+                    space(this,8)
+                    val preview=text(context,12f).apply { setTextIsSelectable(true) }
+                    val scroll=ScrollView(this@MainActivity).apply { addView(preview) }
+                    addView(scroll,LinearLayout.LayoutParams(-1,dp(220)))
+                }
                 showDialog(AlertDialog.Builder(this).setTitle("Send selected evidence to Gemini?")
-                    .setMessage("This shares up to 160 relevant/time-distributed moments, capped at 40,000 characters, and your question. Screenshots stay local. Temporary server failures may be retried, up to three requests total; API charges may apply. Review the actual evidence below.")
-                    .setView(ScrollView(this).apply { addView(preview) }).setNegativeButton("Cancel",null).setPositiveButton("Send to Gemini") { _, _ ->
+                    .setView(container).setNegativeButton("Cancel",null).setPositiveButton("Send to Gemini") { _, _ ->
+                        val requestKey=try { prefs.key() } catch(_:Exception) { toast("Could not unlock the saved key. Save it again in Settings.");return@setPositiveButton }
+                        lastContext=context;answerModel=requestModel
                         activeRequest?.cancel()
                         val control=Gemini.RequestControl();activeRequest=control;asking=true;answer="";tab="Ask Gemini";render()
                         networkExecutor.execute {
-                            val result=try { Gemini.ask(prefs.key(),prefs.model,question,context,control) } catch(e:Exception) { "Request failed: ${e.message}" }
+                            val result=try { Gemini.ask(requestKey,requestModel,question,context,control) } catch(e:Exception) { "Request failed: ${e.message}" }
                             runOnUiThread { if(!isDestroyed && activeRequest===control && !control.cancelled) { answer=result;asking=false;activeRequest=null;render() } }
                         }
                     }.create())
@@ -389,10 +515,22 @@ class MainActivity : Activity() {
     private fun choices(title:String,labels:Array<String>,selected:Int,onSelect:(Int)->Unit) {
         showDialog(AlertDialog.Builder(this).setTitle(title).setSingleChoiceItems(labels,selected) { dialog,index -> dialog.dismiss();onSelect(index) }.setNegativeButton("Cancel",null).create())
     }
-    private fun saveCapture(name:String,value:Int) { CaptureService.instance?.pause();prefs.p.edit().putInt(name,value).apply();db.breakSession();render() }
+    private fun updateCaptureSettings(update:()->Unit) {
+        val service=CaptureService.instance
+        val resumeAfter=prefs.recording
+        service?.pause("Applying capture settings") // Invalidate in-flight frames before applying privacy/storage changes.
+        update();db.breakSession()
+        if(resumeAfter)service?.resume()
+        render()
+    }
+    private fun saveCapture(name:String,value:Int) = updateCaptureSettings { prefs.p.edit().putInt(name,value).apply() }
+    private fun appVersion():Pair<String,Long> {
+        val info=packageManager.getPackageInfo(packageName,0)
+        return (info.versionName ?: "Unknown") to info.longVersionCode
+    }
     private fun settings() {
         section("General");val general=card()
-        settingSwitch(general,"Foreground service","Keep capture visible in the background",prefs.foreground) { value -> CaptureService.instance?.pause();prefs.p.edit().putBoolean("foreground",value).apply();render() }
+        settingSwitch(general,"Foreground service","Keep capture visible in the background",prefs.foreground) { value -> updateCaptureSettings { prefs.p.edit().putBoolean("foreground",value).apply() } }
         settingRow(general,"Appearance",prefs.appearance.replaceFirstChar { it.uppercase() }) {
             val modes=listOf("system","light","dark");choices("Appearance",arrayOf("Follow system","Light","Dark"),modes.indexOf(prefs.appearance)) { prefs.p.edit().putString("appearance",modes[it]).apply();recreate() }
         }
@@ -402,13 +540,13 @@ class MainActivity : Activity() {
         }
         settingRow(general,"Gemini",if(prefs.p.contains("key")) "API key saved · ${prefs.model}" else "Configure your API key and model") { tab="Gemini";render() }
         section("Capture & storage");val storage=card()
-        settingSwitch(storage,"Adaptive capture","3s visual checks · 250ms scroll settling · idle at most 15s; uses more battery",prefs.adaptive) { value -> CaptureService.instance?.pause();prefs.p.edit().putBoolean("adaptive",value).apply();render() }
-        settingSwitch(storage,"Redact sensitive text","Best effort for emails, phone/card numbers and keys. Images and old stored text remain unchanged; Gemini evidence is filtered.",prefs.redactText) { value -> CaptureService.instance?.pause();prefs.p.edit().putBoolean("redact_text",value).apply();db.breakSession();render() }
+        settingSwitch(storage,"Adaptive capture","3s visual checks · 250ms scroll settling · idle at most 15s; uses more battery",prefs.adaptive) { value -> updateCaptureSettings { prefs.p.edit().putBoolean("adaptive",value).apply() } }
+        settingSwitch(storage,"Redact sensitive text","Best effort for emails, phone/card numbers and keys. Images and old stored text remain unchanged; Gemini evidence is filtered.",prefs.redactText) { value -> updateCaptureSettings { prefs.p.edit().putBoolean("redact_text",value).apply() } }
         settingRow(storage,"Blocked websites","Skip detected browser addresses · private-tab labels are also filtered") {
             val field=input("Domains, one per line (example.com)",prefs.blockedDomains,true)
-            showDialog(AlertDialog.Builder(this).setTitle("Blocked websites").setMessage("Matches a domain and its subdomains when the browser exposes its address bar. Private tabs are detected from visible labels. Hidden addresses and private modes cannot always be detected; exclude the entire browser for stronger protection.").setView(field).setPositiveButton("Save") { _,_ -> CaptureService.instance?.pause();prefs.p.edit().putString("blocked_domains",field.text.toString()).apply();render() }.setNegativeButton("Cancel",null).create())
+            showDialog(AlertDialog.Builder(this).setTitle("Blocked websites").setMessage("Matches a domain and its subdomains when the browser exposes its address bar. Private tabs are detected from visible labels. Hidden addresses and private modes cannot always be detected; exclude the entire browser for stronger protection.").setView(field).setPositiveButton("Save") { _,_ -> updateCaptureSettings { prefs.p.edit().putString("blocked_domains",field.text.toString()).apply() } }.setNegativeButton("Cancel",null).create())
         }
-        settingSwitch(storage,"Grayscale images","Save color-free screenshots after OCR",prefs.grayscale) { value -> CaptureService.instance?.pause();prefs.p.edit().putBoolean("grayscale",value).apply();db.breakSession();render() }
+        settingSwitch(storage,"Grayscale images","Save color-free screenshots after OCR",prefs.grayscale) { value -> updateCaptureSettings { prefs.p.edit().putBoolean("grayscale",value).apply() } }
         settingRow(storage,"Image resolution",if(prefs.resolution==0) "Original" else "${prefs.resolution}p · short edge") {
             val resolutions=listOf(480,720,1080,0);choices("New screenshot resolution",arrayOf("480p · smallest","720p · balanced","1080p · detailed","Original · most storage"),resolutions.indexOf(prefs.resolution)) { saveCapture("resolution",resolutions[it]) }
         }
@@ -426,14 +564,14 @@ class MainActivity : Activity() {
         settingRow(storage,"Apps to record",if(prefs.onlySelected) "${prefs.selectedApps.size} selected apps; exclusions still apply" else "All eligible apps; exclusions still apply") { appPicker() }
         settingRow(storage,"Excluded apps","Manage private and banking package exclusions") {
             val field=input("Package names/fragments, one per line",prefs.exclusions,true)
-            showDialog(AlertDialog.Builder(this).setTitle("Excluded apps").setView(field).setPositiveButton("Save") { _,_ -> CaptureService.instance?.pause();prefs.p.edit().putString("exclusions",field.text.toString()).apply();render() }.setNegativeButton("Cancel",null).create())
+            showDialog(AlertDialog.Builder(this).setTitle("Excluded apps").setView(field).setPositiveButton("Save") { _,_ -> updateCaptureSettings { prefs.p.edit().putString("exclusions",field.text.toString()).apply() } }.setNegativeButton("Cancel",null).create())
         }
         settingRow(storage,"Android accessibility settings","Enable or reconnect screen capture") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         section("Your data");val data=card()
         settingRow(data,"Export all screenshots","ZIP with unique images and history.json") { prepareExport("zip") }
         settingRow(data,"Privacy information","Local storage, capture filters, and Gemini sharing") { showDialog(AlertDialog.Builder(this).setTitle("Your privacy").setMessage("Screenshots and OCR stay in private device storage with no automatic cloud backup. Locked, password, secure and excluded screens are skipped, but filters cannot identify every sensitive screen. Pause when needed. Gemini receives only selected text after you confirm a request. Your API key is encrypted with Android Keystore. Exports are managed separately. Privacy mode protects access to the app; it does not encrypt the history database independently of Android device encryption.").setPositiveButton("OK",null).create()) }
         settingRow(data,"Export diagnostics","Version, capture status, settings and counts; no key, OCR or screenshots") { prepareExport("diagnostics") }
-        settingRow(data,"Version","0.5.0 (5)") { toast("Mini Screenpipe · Kotlin · Android") }
+        settingRow(data,"Version","${appVersion().first} (${appVersion().second})") { toast("Aevra · Kotlin · Android") }
         settingRow(data,"Delete all history","Permanently remove local text and screenshots") {
             showDialog(AlertDialog.Builder(this).setTitle("Delete all local history?").setMessage("All screenshots and text will be removed. Capture will pause.").setNegativeButton("Cancel",null).setPositiveButton("Delete") { _,_ -> CaptureService.instance?.pause();prefs.recording=false;background { db.clear();runOnUiThread { answer="";render() } } }.create())
         }
@@ -447,18 +585,78 @@ class MainActivity : Activity() {
         ai.addView(button("Show / hide entered key") { revealed=!revealed;key.transformationMethod=if(revealed)null else android.text.method.PasswordTransformationMethod.getInstance();key.setSelection(key.text.length) })
         ai.addView(button("Get from AI Studio ↗") { try { startActivity(Intent(Intent.ACTION_VIEW,android.net.Uri.parse("https://aistudio.google.com/app/apikey"))) } catch(_:Exception) { toast("No browser available") } })
         ai.addView(text("Create or copy your key in Google AI Studio, then paste it above.",13f,muted))
-        val model=input("Gemini model ID",prefs.model);ai.addView(text("Model",14f,ink,true));ai.addView(model)
-        fun save():Boolean = try { require(model.text.toString().trim().matches(Regex("[a-zA-Z0-9._-]+"))) { "Enter a valid model ID" };if(key.text.isNotBlank())prefs.saveKey(key.text.toString());prefs.p.edit().putString("model",model.text.toString().trim()).apply();key.setText("");true } catch(e:Exception) { toast(e.message ?: "Could not save key");false }
+        space(ai,10)
+        ai.addView(text("Flash-Lite Model",14f,ink,true))
+        ai.addView(text("Choose a Flash-Lite model. Availability and rate limits depend on your API account.",12f,muted))
+        space(ai,4)
+        val flashLiteModels=Prefs.FLASH_LITE_MODELS
+        var selectedModel=if(prefs.model in flashLiteModels) prefs.model else flashLiteModels.first()
+        val spinnerContainer=FrameLayout(this).apply {
+            background=outlined(elevated,12)
+            layoutParams=LinearLayout.LayoutParams(-1,-2).apply { topMargin=dp(6);bottomMargin=dp(8) }
+        }
+        val spinner=Spinner(this).apply {
+            background=null
+            setPadding(dp(12),dp(12),dp(40),dp(12))
+        }
+        val adapter=object:ArrayAdapter<String>(this,android.R.layout.simple_spinner_item,flashLiteModels) {
+            override fun getView(position:Int,convertView:View?,parent:ViewGroup):View {
+                val v=super.getView(position,convertView,parent) as TextView
+                v.setTextColor(ink);v.textSize=14f;return v
+            }
+            override fun getDropDownView(position:Int,convertView:View?,parent:ViewGroup):View {
+                val v=super.getDropDownView(position,convertView,parent) as TextView
+                v.setTextColor(ink);v.setBackgroundColor(surface);v.setPadding(dp(16),dp(12),dp(16),dp(12));v.textSize=14f;return v
+            }
+        }
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinner.adapter=adapter
+        spinner.setSelection(flashLiteModels.indexOf(selectedModel).coerceAtLeast(0))
+        spinner.onItemSelectedListener=object:AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent:AdapterView<*>?,view:View?,position:Int,id:Long) {
+                selectedModel=flashLiteModels[position]
+            }
+            override fun onNothingSelected(parent:AdapterView<*>?) {}
+        }
+        val arrow=icon("chevron",14,muted).apply {
+            rotation=90f
+            layoutParams=FrameLayout.LayoutParams(dp(14),dp(14),Gravity.END or Gravity.CENTER_VERTICAL).apply { rightMargin=dp(14) }
+        }
+        spinnerContainer.addView(spinner,FrameLayout.LayoutParams(-1,-2))
+        spinnerContainer.addView(arrow)
+        ai.addView(spinnerContainer)
+        fun save():Boolean = try {
+            require(selectedModel in flashLiteModels) { "Select a valid Flash-Lite model" }
+            if(key.text.isNotBlank())prefs.saveKey(key.text.toString())
+            prefs.saveModel(selectedModel)
+            key.setText("")
+            true
+        } catch(e:Exception) { toast(e.message ?: "Could not save settings");false }
         ai.addView(primary("Save Gemini settings") { if(save()) { toast("Gemini settings saved");render() } })
-        ai.addView(button("Say hello to Gemini · test connection") { if(save())testGemini() })
+        ai.addView(button("Test if model is working") { if(save())testGemini(selectedModel) })
         ai.addView(button("Remove API key") { showDialog(AlertDialog.Builder(this).setTitle("Remove saved key?").setNegativeButton("Cancel",null).setPositiveButton("Remove") { _,_ -> prefs.saveKey("");render() }.create()) })
     }
-    private fun testGemini() {
-        if(asking)return
-        val control=Gemini.RequestControl();activeRequest=control;asking=true;toast("Testing Gemini with a synthetic greeting…")
+    private fun testGemini(modelToTest:String=prefs.model) {
+        val key=prefs.key()
+        if(key.isBlank()) { toast("Save your Gemini API key first.");return }
+        if(asking) { activeRequest?.cancel();activeRequest=null;asking=false }
+        val control=Gemini.RequestControl();activeRequest=control;asking=true;toast("Testing $modelToTest…")
+        val startTime=System.currentTimeMillis()
         networkExecutor.execute {
-            val result=try { Gemini.ask(prefs.key(),prefs.model,"Say hello and confirm that the connection works. Cite the test observation.",Gemini.context(listOf(Entry(1,System.currentTimeMillis(),"Connection test","test","Hello from Mini Screenpipe. This is synthetic test data, not user history.","",1))),control);"Gemini connected successfully." } catch(e:Exception) { "Connection failed: ${e.message}" }
-            runOnUiThread { if(!isDestroyed && activeRequest===control) { activeRequest=null;asking=false;showDialog(AlertDialog.Builder(this).setTitle("Gemini connection").setMessage(result).setPositiveButton("OK",null).create()) } }
+            val (success,message)=try {
+                val response=Gemini.testModel(key,modelToTest,control)
+                val elapsed=System.currentTimeMillis()-startTime
+                true to "Model '$modelToTest' is working properly! (${elapsed}ms)\n\n$response"
+            } catch(e:Exception) {
+                false to "Model '$modelToTest' is NOT working.\n\nError: ${e.message}"
+            }
+            runOnUiThread {
+                if(isDestroyed || activeRequest!==control || control.cancelled)return@runOnUiThread
+                activeRequest=null;asking=false
+                if(!isDestroyed) {
+                    showDialog(AlertDialog.Builder(this).setTitle(if(success)"Model is working" else "Model test failed").setMessage(message).setPositiveButton("OK",null).create())
+                }
+            }
         }
     }
     private fun appPicker() {
@@ -480,7 +678,7 @@ class MainActivity : Activity() {
             }
         }
         populate("");search.addTextChangedListener(object:android.text.TextWatcher { override fun beforeTextChanged(s:CharSequence?,start:Int,count:Int,after:Int){};override fun onTextChanged(s:CharSequence?,start:Int,before:Int,count:Int){populate(s.toString())};override fun afterTextChanged(s:android.text.Editable?){} })
-        showDialog(AlertDialog.Builder(this).setTitle("Apps to record").setView(container).setNegativeButton("Cancel",null).setPositiveButton("Save") { _,_ -> CaptureService.instance?.pause();prefs.p.edit().putStringSet("selected_apps",selected).putBoolean("only_selected",only.isChecked).apply();render() }.create())
+        showDialog(AlertDialog.Builder(this).setTitle("Apps to record").setView(container).setNegativeButton("Cancel",null).setPositiveButton("Save") { _,_ -> updateCaptureSettings { prefs.p.edit().putStringSet("selected_apps",selected).putBoolean("only_selected",only.isChecked).apply() } }.create())
     }
     private var exporting=false
     private fun export() { prepareExport("json") }
@@ -493,10 +691,10 @@ class MainActivity : Activity() {
             try {
                 when(kind) {
                     "zip" -> db.exportZip(file)
-                    "diagnostics" -> file.writeText(org.json.JSONObject().put("version","0.5.0").put("android_api",Build.VERSION.SDK_INT).put("service_connected",CaptureService.instance!=null).put("recording",prefs.recording).put("interval",prefs.interval).put("retention_days",prefs.retention).put("resolution_short_edge",prefs.resolution).put("grayscale",prefs.grayscale).put("foreground",prefs.foreground).put("moment_count",db.summary("",0,Long.MAX_VALUE).count).put("image_bytes",db.imageBytes()).toString(2))
+                    "diagnostics" -> file.writeText(org.json.JSONObject().put("version",appVersion().first).put("version_code",appVersion().second).put("android_api",Build.VERSION.SDK_INT).put("service_connected",CaptureService.instance!=null).put("recording",prefs.recording).put("capture_status",CaptureService.status).put("last_pause_reason",prefs.p.getString("capture_pause_reason", "Unknown")).put("last_pause_time",prefs.p.getLong("capture_pause_time",0)).put("interval",prefs.interval).put("retention_days",prefs.retention).put("resolution_short_edge",prefs.resolution).put("grayscale",prefs.grayscale).put("foreground",prefs.foreground).put("moment_count",db.summary("",0,Long.MAX_VALUE).count).put("image_bytes",db.imageBytes()).toString(2))
                     else -> file.outputStream().use { db.writeExport(it,search,start,end) }
                 }
-                runOnUiThread { exporting=false;if(!isDestroyed)startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType(if(code==4)"application/zip" else "application/json").putExtra(Intent.EXTRA_TITLE,if(code==4)"mini-screenpipe-screenshots.zip" else if(code==5)"mini-screenpipe-diagnostics.json" else "mini-screenpipe-${selectedDay ?: "all-days"}.json"),code) }
+                runOnUiThread { exporting=false;if(!isDestroyed)startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType(if(code==4)"application/zip" else "application/json").putExtra(Intent.EXTRA_TITLE,if(code==4)"aevra-screenshots.zip" else if(code==5)"aevra-diagnostics.json" else "aevra-${selectedDay ?: "all-days"}.json"),code) }
             } catch(_:Exception) { file.delete();runOnUiThread { exporting=false;toast("Could not prepare export. Check free storage.") } }
         }
     }

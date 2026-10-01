@@ -35,6 +35,9 @@ class UiIcon(context:Context,private val name:String,private val tint:Int):View(
             "text" -> { rect(4f,3f,20f,21f);for(y in listOf(8f,12f,16f))line(8f,y,16f,y) }
             "image" -> { rect(3f,3f,21f,21f);circle(8f,8f,1.5f);path(4f,18f,10f,12f,14f,16f,18f,11f,21f,14f) }
             "external" -> { path(14f,3f,21f,3f,21f,10f);line(21f,3f,11f,13f);path(10f,4f,4f,4f,4f,20f,20f,20f,20f,14f) }
+            "user" -> { circle(12f,7f,4f);canvas.drawArc(5f,14f,19f,24f,180f,180f,false,p) }
+            "copy" -> { rect(8f,8f,20f,20f,2f);path(16f,5f,5f,5f,5f,16f) }
+            "refresh" -> { canvas.drawArc(4f,4f,20f,20f,45f,270f,false,p);path(17f,5f,20f,11f,14f,11f) }
             else -> { circle(12f,12f,9f);line(12f,10f,12f,17f);circle(12f,6f,0.5f) }
         }
         canvas.restore()

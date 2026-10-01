@@ -48,8 +48,57 @@ class GeminiContextTest {
     }
     @Test fun normalizationKeepsRepeatedContent() { assertEquals("Alice\nAlice",EvidencePolicy.normalize(" Alice\n\n Alice ")) }
     @Test fun emptyHistoryIsEmpty() { assertEquals("",Gemini.context(emptyList())) }
+    @Test fun questionParsingAndTopicIsolationStripsStopWords() {
+        val topic = EvidencePolicy.topicWords("What was I reading about quantum computing?")
+        assertEquals(setOf("quantum", "computing"), topic)
+        assertFalse(topic.contains("what"))
+        assertFalse(topic.contains("was"))
+        assertFalse(topic.contains("reading"))
+        assertFalse(topic.contains("about"))
+    }
+    @Test fun ftsQueryFormatsTopicPrefixOrQuery() {
+        val words = EvidencePolicy.topicWords("What was I reading about quantum computing?")
+        assertEquals("\"quantum*\" OR \"computing*\"", EvidencePolicy.ftsQuery(words, or = true))
+    }
+    @Test fun keywordExcerptAllocatesBudgetToRelevantLines() {
+        val lines = listOf("Chrome browser chrome ui line 1", "quantum computing research milestone paper", "another generic line")
+        val text = lines.joinToString("\n")
+        val e = entry(104, text).copy(app = "Google Chrome")
+        val ctx = Gemini.context(listOf(e), "What was I reading about quantum computing?")
+        assertTrue(ctx.contains("[104]"))
+        assertTrue(ctx.contains("Google Chrome"))
+        assertTrue(ctx.contains("quantum computing research milestone paper"))
+    }
+    @Test fun inferencePrefixedAndBracketNumbersSanitized() {
+        val json = """{
+            "headline": "Quantum Computing [999]",
+            "findings": [
+                {"text": "Observed milestone [104]", "kind": "observed", "observation_ids": [104]},
+                {"text": "User was researching [104]", "kind": "inferred", "observation_ids": [104]}
+            ],
+            "gaps": ["Missing tab history [50]"]
+        }"""
+        val rendered = Gemini.validateAndRender(json, setOf(104))
+        assertTrue(rendered.contains("Quantum Computing (999)"))
+        assertTrue(rendered.contains("• Observed milestone (104) [104]"))
+        assertTrue(rendered.contains("• Inference: User was researching (104) [104]"))
+        assertTrue(rendered.contains("Missing tab history (50)"))
+    }
     @Test fun invalidKeyAndModelFailBeforeNetwork() {
         try { Gemini.ask("","gemini-3.5-flash-lite","q","c");fail("Must reject empty key") } catch(_:IllegalArgumentException) { }
         try { Gemini.ask("test","../other","q","c");fail("Must reject model path") } catch(_:IllegalArgumentException) { }
+    }
+    @Test fun flashLiteModelsContainOnlyFlashLiteVariants() {
+        assertTrue(Prefs.FLASH_LITE_MODELS.isNotEmpty())
+        for (m in Prefs.FLASH_LITE_MODELS) {
+            assertTrue("Model $m should be a flash-lite model", m.contains("flash-lite"))
+        }
+        assertTrue(Prefs.FLASH_LITE_MODELS.contains("gemini-3.5-flash-lite"))
+    }
+    @Test fun testModelValidatesKeyBeforeNetwork() {
+        try {
+            Gemini.testModel("", "gemini-3.5-flash-lite")
+            fail("Must reject empty key when testing model")
+        } catch(_: IllegalArgumentException) {}
     }
 }

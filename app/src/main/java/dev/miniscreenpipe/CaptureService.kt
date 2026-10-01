@@ -51,7 +51,10 @@ class CaptureService : AccessibilityService() {
     } }
     override fun onServiceConnected() {
         prefs=Prefs(this); db=HistoryDb.get(this); instance=this
-        prefs.recording=false; status="Connected · paused"
+        // Preserve an explicit Start/Pause choice across Android process restarts.
+        if(prefs.recording && prefs.p.getBoolean("consent",false)) {
+            timing.reset();status="Reconnected · waiting for an eligible screen"
+        } else { prefs.recording=false;status=prefs.p.getString("capture_pause_reason","Connected · paused") ?: "Connected · paused" }
         handler.removeCallbacks(tick); handler.post(tick); notifyState()
     }
     override fun onAccessibilityEvent(event:AccessibilityEvent?) {
@@ -79,22 +82,24 @@ class CaptureService : AccessibilityService() {
             synchronized(commitLock) { generation.incrementAndGet();lastObserved=0 }
             breakSession()
         }
-        if(nowBlocked)status="Skipping excluded, locked, private, or protected screen"
+        if(nowBlocked)status=skipReason
     }
 
-    override fun onInterrupt() { if(::prefs.isInitialized)pause(); status="Service interrupted · paused" }
+    // Android interrupts accessibility feedback (e.g. speech), not recording consent.
+    override fun onInterrupt() {}
     override fun onDestroy() {
-        synchronized(commitLock) { destroyed=true; generation.incrementAndGet(); if(::prefs.isInitialized)prefs.recording=false }
+        synchronized(commitLock) { destroyed=true; generation.incrementAndGet() }
         handler.removeCallbacksAndMessages(null)
         worker.execute { recognizer.close(); if(::db.isInitialized)db.breakSession() }; worker.shutdown()
         getSystemService(NotificationManager::class.java).cancel(1)
         if(instance===this) { instance=null; status="Service disconnected" }
         super.onDestroy()
     }
-    fun pause() {
+    fun pause(reason:String="Paused from app") {
         synchronized(commitLock) { generation.incrementAndGet(); prefs.recording=false }
         handler.removeCallbacks(eventCapture); timing.reset();breakSession()
-        status="Paused"; notifyState()
+        prefs.p.edit().putString("capture_pause_reason",reason).putLong("capture_pause_time",System.currentTimeMillis()).commit()
+        status=reason; notifyState()
     }
     fun resume() {
         synchronized(commitLock) { generation.incrementAndGet(); prefs.recording=true }
@@ -102,7 +107,7 @@ class CaptureService : AccessibilityService() {
     }
     private fun password(node:AccessibilityNodeInfo?,depth:Int=0,budget:IntArray=intArrayOf(2500)):Boolean {
         if(node==null)return false
-        if(node.isPassword || depth>40 || --budget[0]<0)return true
+        if((node.isVisibleToUser && node.isPassword) || depth>40 || --budget[0]<0)return true
         for(i in 0 until node.childCount) if(password(node.getChild(i),depth+1,budget))return true
         return false
     }
@@ -120,17 +125,26 @@ class CaptureService : AccessibilityService() {
         for(i in 0 until node.childCount)if(browserPrivate(node.getChild(i),checkPrivate,depth+1,budget))return true
         return false
     }
+    private var skipReason="Waiting for a visible app"
     private fun eligible(pkg:String):Boolean {
-        val root=rootInActiveWindow ?: return false
-        if(!prefs.recording || destroyed || !getSystemService(PowerManager::class.java).isInteractive || getSystemService(KeyguardManager::class.java).isKeyguardLocked || pkg.isBlank() || prefs.excluded(pkg))return false
-        if(root.packageName?.toString()!=pkg || password(root) || ((TextPrivacy.browser(pkg) || prefs.blockedDomains.isNotBlank()) && browserPrivate(root,TextPrivacy.browser(pkg))))return false
-        return windows.none { w ->
-            if(w.type!=AccessibilityWindowInfo.TYPE_APPLICATION && !w.isFocused && !w.isActive)return@none false
-            val other=w.root ?: return@none false
+        fun skip(reason:String):Boolean { skipReason=reason;return false }
+        if(!prefs.recording || destroyed)return skip("Paused")
+        if(!getSystemService(PowerManager::class.java).isInteractive || getSystemService(KeyguardManager::class.java).isKeyguardLocked)return skip("Skipping locked screen")
+        val root=rootInActiveWindow ?: return skip("Waiting for a visible app")
+        if(pkg.isBlank() || root.packageName?.toString()!=pkg)return skip("Waiting for the active window")
+        if(pkg==packageName)return skip("Capture running · switch to another app")
+        if(prefs.excluded(pkg))return skip("Skipping excluded app: $pkg")
+        if(password(root))return skip("Skipping password screen or an unverifiable view tree")
+        if((TextPrivacy.browser(pkg) || prefs.blockedDomains.isNotBlank()) && browserPrivate(root,TextPrivacy.browser(pkg)))return skip("Skipping private tab, blocked website, or an unverifiable browser tree")
+        val protectedOverlay=windows.any { w ->
+            if(w.type!=AccessibilityWindowInfo.TYPE_APPLICATION && !w.isFocused && !w.isActive)return@any false
+            val other=w.root ?: return@any false
             val otherPkg=other.packageName?.toString().orEmpty()
             otherPkg!=pkg && (prefs.excluded(otherPkg) || password(other) ||
                 ((TextPrivacy.browser(otherPkg) || prefs.blockedDomains.isNotBlank()) && browserPrivate(other,TextPrivacy.browser(otherPkg))))
         }
+        if(protectedOverlay)return skip("Skipping screen with a protected app window")
+        return true
     }
     private fun safeCapture(reason:String) {
         if(destroyed)return
@@ -143,7 +157,7 @@ class CaptureService : AccessibilityService() {
             worker.execute { try { db.prune(prefs.retention) } catch(_:Exception) { status="Storage maintenance failed; check free space" } }
         }
         if(!prefs.recording || busy)return
-        if(!getSystemService(NotificationManager::class.java).areNotificationsEnabled()) { pause();status="Paused · capture notifications disabled";return }
+        if(!getSystemService(NotificationManager::class.java).areNotificationsEnabled()) { pause("Paused · capture notifications disabled");return }
         val root=rootInActiveWindow
         val pkg=root?.packageName?.toString().orEmpty()
         if(!eligible(pkg))return
@@ -230,13 +244,20 @@ class CaptureService : AccessibilityService() {
         if(!prefs.recording) { stopForeground(STOP_FOREGROUND_REMOVE);manager.cancel(1);return }
         val open=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val pause=PendingIntent.getBroadcast(this,1,Intent(this,PauseReceiver::class.java),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        val notification=Notification.Builder(this,"capture").setSmallIcon(android.R.drawable.ic_menu_camera).setContentTitle("Mini Screenpipe is capturing")
+        val notification=Notification.Builder(this,"capture").setSmallIcon(android.R.drawable.ic_menu_camera).setContentTitle("Aevra is capturing")
             .setContentText("${if(prefs.adaptive)"Adaptive screens + ${minOf(prefs.interval,15)}s idle" else "Changed screens + ${prefs.interval}s idle"} · Pause to stop").setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null,"Pause",pause).build()).build()
         if(prefs.foreground) {
             try { if(Build.VERSION.SDK_INT>=34)startForeground(1,notification,android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE) else startForeground(1,notification) }
             catch(_:Exception) { prefs.recording=false;status="Foreground capture unavailable. Disable foreground mode or start again from the app.";stopForeground(STOP_FOREGROUND_REMOVE);manager.cancel(1) }
         } else { stopForeground(STOP_FOREGROUND_DETACH);manager.notify(1,notification) }
     }
-    companion object { @Volatile var instance:CaptureService?=null; @Volatile var status="Enable the capture service to begin" }
+    private fun persistStatus(value:String) {
+        if(::prefs.isInitialized)prefs.p.edit().putString("capture_status",value).putLong("capture_status_time",System.currentTimeMillis()).apply()
+    }
+    companion object {
+        @Volatile var instance:CaptureService?=null
+        @Volatile var status="Enable the capture service to begin"
+            set(value) { if(field==value)return;field=value;instance?.persistStatus(value) }
+    }
 }
-class PauseReceiver:BroadcastReceiver() { override fun onReceive(context:Context,intent:Intent) { CaptureService.instance?.pause() ?: run { Prefs(context).recording=false } } }
+class PauseReceiver:BroadcastReceiver() { override fun onReceive(context:Context,intent:Intent) { CaptureService.instance?.pause("Paused from notification") ?: run { val prefs=Prefs(context);prefs.recording=false;prefs.p.edit().putString("capture_pause_reason","Paused from notification").putLong("capture_pause_time",System.currentTimeMillis()).commit() } } }

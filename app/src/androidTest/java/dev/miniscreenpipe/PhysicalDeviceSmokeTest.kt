@@ -34,7 +34,8 @@ class PhysicalDeviceSmokeTest {
         val originalExclusions = prefs.exclusions
         val existingServices = shell("settings get secure enabled_accessibility_services").trim().takeUnless { it == "null" }.orEmpty()
         val service = "dev.miniscreenpipe/dev.miniscreenpipe.CaptureService"
-        val services = (existingServices.split(':').filter { it.isNotBlank() } + service).distinct().joinToString(":")
+        val aliases=setOf(service,"dev.miniscreenpipe/.CaptureService")
+        val services = (existingServices.split(':').filter { it.isNotBlank() && it !in aliases } + service).distinct().joinToString(":")
         val idsBefore = db.search("", 0, Long.MAX_VALUE, 0).map { it.id }.toSet()
         val keyFile = File(target.filesDir, "device-test-key")
         val useSavedKey=InstrumentationRegistry.getArguments().getString("useSavedKey")=="true"
@@ -45,7 +46,14 @@ class PhysicalDeviceSmokeTest {
             check(prefs.key().isNotBlank()) { "No saved key is available" }
             prefs.p.edit().putInt("interval", 10).putBoolean("foreground",true).putBoolean("only_selected",false).putBoolean("grayscale",true).putInt("resolution",480).putBoolean("consent", true).commit()
             shell("pm grant dev.miniscreenpipe android.permission.POST_NOTIFICATIONS")
+            // Instrumentation force-stops the target process. An unchanged enabled-services
+            // value leaves Accessibility Manager's old dead binding in place: reconnect ours only.
+            val others=existingServices.split(':').filter { it.isNotBlank() && it !in aliases }.joinToString(":")
+            // UiAutomation executes argv directly; shell quoting would become literal data.
+            shell(if(others.isBlank())"settings delete secure enabled_accessibility_services" else "settings put secure enabled_accessibility_services $others")
+            SystemClock.sleep(750)
             shell("settings put secure enabled_accessibility_services $services")
+            assertEquals("Enabled-service command must write canonical component names",services,shell("settings get secure enabled_accessibility_services").trim())
             shell("settings put secure accessibility_enabled 1")
             assertTrue("Accessibility service did not connect", waitUntil(15000) { CaptureService.instance != null })
             fun show(password: Boolean = false) {
@@ -79,7 +87,12 @@ class PhysicalDeviceSmokeTest {
             assertEquals("Password screen must not be captured", afterCapture, db.search("", 0, Long.MAX_VALUE, 0).size)
             instrumentation.runOnMainSync { CaptureService.instance!!.pause() }
             println("DEVICE_PRIVACY_OK: pause, exclusion, password screen")
-            val answer = Gemini.ask(prefs.key(), prefs.model, "Which exact phrase was visible? Quote the phrase and cite the observation id. This is a test screen.", Gemini.context(fixtureEntries))
+            val question="Which Kotlin memory phrase was visible? Quote the phrase and cite the observation id. This is a test screen."
+            val retrieved=db.retrieve("Kotlin memory capture verification",fixtureEntries.minOf { it.time },fixtureEntries.maxOf { it.lastSeen }+1,question)
+            assertTrue("Retrieval must contain only synthetic observations",retrieved.entries.isNotEmpty() && retrieved.entries.all { it.pkg==testPackage && it.id !in idsBefore })
+            val evidence=EvidencePolicy.context(retrieved.entries,question,true,retrieved.note)
+            assertTrue("Retrieved evidence must obey the prompt budget",RetrievalPolicy.fit(evidence))
+            val answer = Gemini.ask(prefs.key(), prefs.model, question, evidence)
             assertTrue("Gemini must return supported findings", answer.isNotBlank() && fixtureEntries.any { answer.contains("[${it.id}]") })
             println("DEVICE_GEMINI_OK: response received (${answer.length} characters); model ${prefs.model}")
         } finally {

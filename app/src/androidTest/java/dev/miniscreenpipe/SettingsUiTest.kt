@@ -22,6 +22,7 @@ class SettingsUiTest {
         org.junit.Assume.assumeTrue(android.os.Build.FINGERPRINT.contains("generic") || android.os.Build.MODEL.contains("sdk"))
         val instrument=InstrumentationRegistry.getInstrumentation();val context=instrument.targetContext
         val automation=instrument.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+        val prefs=Prefs(context);val originalModel=prefs.model
         val db=HistoryDb.get(context);val image=Bitmap.createBitmap(600,900,Bitmap.Config.ARGB_8888).apply {
             val canvas=android.graphics.Canvas(this);canvas.drawColor(android.graphics.Color.rgb(247,248,253))
             val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color=android.graphics.Color.rgb(99,102,241);textSize=24f }
@@ -43,7 +44,13 @@ class SettingsUiTest {
             assertTrue("Natural-language search must open evidence preview",waitFor("Send selected evidence to Gemini?"))
             assertTrue("All retained scope must include earlier-day evidence",waitFor("[$id]"))
             val cancel=automation.rootInActiveWindow.findAccessibilityNodeInfosByText("Cancel").first();cancel.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
-            SystemClock.sleep(300);click("Settings");click("Gemini")
+            SystemClock.sleep(300);click("Search");click("Gemini · ${prefs.model}")
+            assertTrue(waitFor("Select Gemini model"))
+            val alternate=Prefs.FLASH_LITE_MODELS.first { it!=originalModel }
+            automation.rootInActiveWindow.findAccessibilityNodeInfosByText(alternate).first().performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+            SystemClock.sleep(300);assertEquals("Search picker must change the model actually used by requests",alternate,prefs.model)
+            assertFalse(prefs.p.contains("gemini_model"))
+            click("Settings");click("Gemini")
             assertTrue(waitFor("Get from AI Studio"))
             val filter=IntentFilter(Intent.ACTION_VIEW).apply { addDataScheme("https");addDataAuthority("aistudio.google.com",null);addDataPath("/app/apikey",android.os.PatternMatcher.PATTERN_LITERAL) }
             val monitor=instrument.addMonitor(filter,null,true)
@@ -66,7 +73,7 @@ class SettingsUiTest {
             }
             screenshot("answer-ui-test.png")
             instrument.runOnMainSync { activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE) }
-        } finally { db.delete(id);image.recycle() }
+        } finally { prefs.saveModel(originalModel);db.delete(id);image.recycle() }
     }
     @Test fun privacyGateDoesNotRenderHistoryBeforeAuthentication() {
         org.junit.Assume.assumeTrue(android.os.Build.FINGERPRINT.contains("generic") || android.os.Build.MODEL.contains("sdk"))
@@ -79,7 +86,7 @@ class SettingsUiTest {
             instrument.runOnMainSync {
                 fun labels(view:View):List<String> = (if(view is TextView)listOf(view.text.toString()) else emptyList())+if(view is ViewGroup)(0 until view.childCount).flatMap { labels(view.getChildAt(it)) } else emptyList()
                 val visible=labels(activity!!.window.decorView)
-                assertTrue(visible.contains("History is locked"));assertFalse(visible.contains("Mini Screenpipe"))
+                assertTrue(visible.contains("History is locked"));assertFalse(visible.contains("Aevra"));assertFalse(visible.contains("Mini Screenpipe"))
             }
         } finally { prefs.p.edit().putBoolean("privacy",original).commit();instrument.runOnMainSync { activity?.finish() } }
     }

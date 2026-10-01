@@ -1,4 +1,4 @@
-# Mini Screenpipe for Android
+# Aevra for Android
 
 A small **Kotlin** Android app for remembering what you saw and which apps you used. Inspired by Screenpipe's local capture → searchable history workflow; implemented independently for Android rather than porting its desktop recorder.
 
@@ -29,8 +29,8 @@ The APK is generated at `app/build/outputs/apk/debug/app-debug.apk`. Install it 
 
 ## First use
 
-1. Open Mini Screenpipe and read the capture disclosure under **Start capture**.
-2. Enable **Mini Screenpipe capture** in Android Accessibility settings. For sideloaded apps Android may require App info → menu → Allow restricted settings first.
+1. Open Aevra and read the capture disclosure under **Start capture**.
+2. Enable **Aevra capture** in Android Accessibility settings. For sideloaded apps Android may require App info → menu → Allow restricted settings first.
 3. Return to the app. In **Settings**, add package fragments for private/banking apps you want excluded. The defaults are conservative but cannot recognize every sensitive app.
 4. Tap **Start capture** and allow notifications. Capture requires notifications enabled. Use other apps for at least one capture interval (30 seconds by default).
 5. Return to **Timeline**. Select a day, search a word/app, or open a moment.
@@ -40,9 +40,9 @@ Do not paste your API key into source files or Git. This personal app calls Gemi
 
 ## Capture behavior and limits
 
-The user explicitly enables Android's accessibility service. It is paused initially and after service restart/reboot. Android 14+ uses `takeScreenshotOfWindow` for the active window. Android 11–13 uses display screenshots; overlays may appear. The app skips locked screens, its own UI, settings/system UI, configured excluded packages, visible excluded windows, and accessibility trees containing password fields. Secure Android screens may reject screenshots and are not bypassed. Detection cannot guarantee that every sensitive screen is filtered: pause capture when needed. No microphone, audio, key logging, or automated taps.
+The user explicitly enables Android's accessibility service. It is paused initially. After you tap Start capture, that choice is saved synchronously and survives service restart/reboot until you explicitly pause; capture resumes only with saved consent and available notifications. Android 14+ uses `takeScreenshotOfWindow` for the active window. Android 11–13 uses display screenshots; overlays may appear. The app skips locked screens, its own UI, settings/system UI, configured excluded packages, visible excluded windows, and accessibility trees containing password fields. Secure Android screens may reject screenshots and are not bypassed. Detection cannot guarantee that every sensitive screen is filtered: pause capture when needed. No microphone, audio, key logging, or automated taps.
 
-Capture is a sample, not full video. Short activities between samples may be missed. OCR currently recognizes Latin script; it may not read every language or image correctly. The optional foreground service runs only during user-started capture and stops on pause; it does not guarantee survival of manufacturer background restrictions. Privacy mode locks the app when it goes into the background and requires configured biometrics or a device screen lock. A device manufacturer may stop background accessibility services; check the app's capture status. Retention is enforced on opening the app, during recorder maintenance, and by a persisted Android JobScheduler task approximately every 15 minutes. Android may delay background jobs; deletion is not guaranteed at an exact time. Never disables age-based text/image deletion but keeps the 500 MB image cap. The image cap is also checked after capture. Grayscale/resolution changes apply only to new captures; existing screenshots remain unchanged. Changing capture settings pauses recording. Grayscale often reduces file size, but the savings depend on image content. The default is color at 720p. Source/quality labels are heuristics, not OCR confidence scores. Text is in app-private SQLite; screenshots are in app-private files. They are not independently encrypted at rest beyond Android device storage encryption. Exported files and text sent to Gemini are outside local deletion control.
+Capture is a sample, not full video. Short activities between samples may be missed. OCR currently recognizes Latin script; it may not read every language or image correctly. The optional foreground service runs only during user-started capture and stops on pause; it does not guarantee survival of manufacturer background restrictions. Privacy mode locks the app when it goes into the background and requires configured biometrics or a device screen lock. A device manufacturer may stop background accessibility services; check the app's capture status. Retention is enforced on opening the app, during recorder maintenance, and by a persisted Android JobScheduler task approximately every 15 minutes. Android may delay background jobs; deletion is not guaranteed at an exact time. Never disables age-based text/image deletion but keeps the 500 MB image cap. The image cap is also checked after capture. Grayscale/resolution changes apply only to new captures; existing screenshots remain unchanged. Changing capture settings invalidates in-flight screenshots, applies the new options, and resumes if capture was already running. Grayscale often reduces file size, but the savings depend on image content. The default is color at 720p. Source/quality labels are heuristics, not OCR confidence scores. Text is in app-private SQLite; screenshots are in app-private files. They are not independently encrypted at rest beyond Android device storage encryption. Exported files and text sent to Gemini are outside local deletion control.
 
 Gemini sends **text only**, on demand after confirmation, capped at 160 selected moments and 40,000 characters. Candidates combine coverage across the chosen time range with question-relevant matches; excerpts prioritize relevant lines and are sent chronologically. A preview shows the actual text to send. Responses must cite selected observation IDs; unsupported IDs or malformed responses receive one repair attempt before being rejected. Up to three total requests may occur for repairs or retryable failures. Timeouts are not automatically replayed. Citation validation establishes that referenced moments exist, not that every interpretation is correct. Busy days can still have missing or excerpted evidence; review clickable references in History. An API key, network access, supported model, and available quota are required. No history from before installation is available.
 
@@ -72,4 +72,25 @@ Android force-stops the target process when an instrumentation test finishes. Th
 python3 scripts/reconnect-service.py --serial YOUR_ADB_SERIAL
 ```
 
-The helper preserves other enabled accessibility services and reconnects Mini Screenpipe in its paused state. Alternatively, switch Mini Screenpipe's accessibility permission off and on. Reopen the settings page if Android continues showing a cached malfunction warning.
+The helper preserves other enabled accessibility services and reconnects Aevra while preserving its saved Start/Pause choice. Alternatively, switch Aevra's accessibility permission off and on. Reopen the settings page if Android continues showing a cached malfunction warning.
+
+
+## v0.6: Aevra retrieval and Gemini review
+
+Your Aevra branding, icons, Gemini model selector and answer UI are preserved. Search and Settings now persist the same selected model; earlier `gemini_model` selections are migrated. Questions retrieve local BM25-ranked evidence before any Gemini call, with date filters, duplicate suppression and relevant OCR excerpts. Evidence is limited to 24 topic observations or 48 overview samples, 18,000 characters and 24 KB UTF-8. An unmatched topic does not send unrelated history. Read [RETRIEVAL.md](RETRIEVAL.md) for the pipeline and practical limits, and [CAPTURE_ANALYSIS.md](CAPTURE_ANALYSIS.md) for the comparison against your Screenpipe notes.
+
+The 160-observation/40,000-character limits described for older releases above have been replaced by these smaller retrieval budgets. Gemini model availability/quota still depends on the API account.
+
+
+### v0.7.0 capture recovery
+
+Chrome recording was verified on the connected Android 15 phone using the public Example Domain page. Recording no longer silently stops after a capture-setting change, service restart, or accessibility feedback interruption. Hidden password controls no longer suppress an otherwise ordinary screen; visible password fields still block capture. Status messages identify excluded apps, password guards, browser guards, locked screens, and protected windows.
+
+`ChromeCaptureTest` is a separately selected, non-destructive phone test: it opens a public Chrome page, checks screenshot/OCR storage, captures a separate test app, checks setting/reconnection recovery, and verifies visible password protection. It removes only observations it created and restores the settings it temporarily changed. Like all Android instrumentation, its teardown can disconnect accessibility; run the reconnect helper afterwards.
+
+
+### Branding and installation identity
+
+The launcher, app UI, accessibility service and notifications use Aevra. Exports are named `aevra-*.json` / `aevra-screenshots.zip`; Settings and diagnostics derive their version from the installed package. The Gradle project is named Aevra. The Android application ID/Kotlin namespace remain `dev.miniscreenpipe` so existing installs, accessibility component bindings, local history and the Keystore key continue to work. The legacy `mini-screenpipe-v2` export format identifies the data schema and stays compatible with older exports.
+
+Capture diagnostics save the last status and pause reason without saving page text or the API key. `CurrentPageCaptureTest` explicitly resumes Chrome's existing task without supplying a URL, checks a screenshot file and OCR text from the current page, retains that requested capture, and leaves recording enabled. After instrumentation, `scripts/reconnect-service.py --serial SERIAL --keep-screen` restores the enabled service without opening Aevra over the current screen.

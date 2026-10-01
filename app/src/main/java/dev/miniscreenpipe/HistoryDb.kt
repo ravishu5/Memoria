@@ -86,20 +86,50 @@ class HistoryDb private constructor(context: Context, name: String) : SQLiteOpen
         val apps=readableDatabase.rawQuery("SELECT app,SUM(interval) FROM captures WHERE $where GROUP BY app ORDER BY SUM(interval) DESC LIMIT 5",args).use { c -> buildList { while(c.moveToNext()) add(c.getString(0) to c.getLong(1)) } }
         return HistorySummary(counts.first,counts.second,apps)
     }
-    @Synchronized fun evidence(query:String,start:Long,end:Long,question:String):List<Entry> {
-        // Fetch a bounded, evenly distributed candidate set across the entire chosen range.
-        val (where,args)=filter(query,start,end)
-        val ids=readableDatabase.rawQuery("SELECT id FROM captures WHERE $where ORDER BY time",args).use { c -> buildList { while(c.moveToNext()) add(c.getLong(0)) } }
-        val selected=linkedSetOf<Long>()
-        if(ids.size<=600) selected.addAll(ids) else repeat(600) { selected.add(ids[(it.toLong()*(ids.size-1)/599).toInt()]) }
-        val words=EvidencePolicy.tokens(question).filter { it.length>=4 }.distinct().take(8)
-        if(words.isNotEmpty()) {
-            val match=words.joinToString(" OR ") { "\"$it*\"" }
-            readableDatabase.rawQuery("SELECT id FROM captures WHERE $where AND id IN (SELECT docid FROM capture_search WHERE capture_search MATCH ?) ORDER BY time DESC LIMIT 300",args+match).use { c -> while(c.moveToNext()) selected.add(c.getLong(0)) }
+    data class Retrieved(val entries:List<Entry>,val note:String)
+    @Synchronized fun retrieve(query:String,start:Long,end:Long,question:String):Retrieved {
+        val plan=RetrievalPolicy.plan(question,start,end)
+        if(plan.start>=plan.end)return Retrieved(emptyList(),plan.scope)
+        val (where,args)=filter(query,plan.start,plan.end)
+        val candidates=linkedMapOf<Long,Entry>()
+        var matched=0
+        if(!plan.overview) {
+            data class Hit(val id:Long,val time:Long,val score:Double)
+            val order=compareBy<Hit> { it.score }.thenBy { it.time }.thenBy { it.id }
+            val heap=java.util.PriorityQueue(order)
+            val match=EvidencePolicy.ftsQuery(plan.words,or=true)
+            // No newest-N cutoff: evaluate all matching index statistics while retaining only a small heap.
+            readableDatabase.rawQuery("SELECT captures.id,captures.time,matchinfo(capture_search,'pcnalx') FROM capture_search JOIN captures ON captures.id=capture_search.docid WHERE capture_search MATCH ? AND $where",arrayOf(match)+args).use { c ->
+                while(c.moveToNext()) {
+                    if(Thread.currentThread().isInterrupted)throw InterruptedException("Retrieval cancelled")
+                    matched++
+                    val hit=Hit(c.getLong(0),c.getLong(1),RetrievalPolicy.bm25(c.getBlob(2)))
+                    if(heap.size<RetrievalPolicy.MAX_CANDIDATES)heap.add(hit)
+                    else if(order.compare(hit,heap.peek())>0) { heap.poll();heap.add(hit) }
+                }
+            }
+            val hits=heap.toList().sortedWith(order.reversed())
+            if(hits.isNotEmpty()) {
+                val ids=hits.map { it.id }
+                readableDatabase.rawQuery("SELECT * FROM captures WHERE id IN (${ids.joinToString(",") { "?" }})",ids.map(Long::toString).toTypedArray()).use { c -> while(c.moveToNext()) { val e=entry(c);candidates[e.id]=e } }
+                val ranked=hits.mapNotNull { candidates[it.id] }
+                return Retrieved(RetrievalPolicy.diverse(ranked,RetrievalPolicy.MAX_FOCUSED),"Local BM25: $matched matching moments; at most ${RetrievalPolicy.MAX_FOCUSED} distinct excerpts selected. ${plan.scope}.")
+            }
+            return Retrieved(emptyList(),"No indexed topic matches. ${plan.scope}.")
         }
-        if(selected.isEmpty()) return emptyList()
-        return readableDatabase.rawQuery("SELECT * FROM captures WHERE id IN (${selected.joinToString(",") { "?" }}) ORDER BY time DESC",selected.map(Long::toString).toTypedArray()).use { c -> buildList { while(c.moveToNext()) add(entry(c)) } }
+        // Overview requests sample indexed time buckets without loading every history ID or full OCR document.
+        val bounds=readableDatabase.rawQuery("SELECT MIN(time),MAX(time),COUNT(*) FROM captures WHERE $where",args).use { c -> c.moveToFirst();Triple(c.getLong(0),c.getLong(1),c.getInt(2)) }
+        if(bounds.third==0)return Retrieved(emptyList(),plan.scope)
+        val bins=RetrievalPolicy.MAX_OVERVIEW-2
+        val width=maxOf(1,(bounds.second-bounds.first)/bins+1)
+        repeat(bins) { i ->
+            val lo=bounds.first+i*width;val hi=lo+width
+            readableDatabase.rawQuery("SELECT * FROM captures WHERE $where AND time>=? AND time<? ORDER BY time,id LIMIT 1",args+arrayOf(lo.toString(),hi.toString())).use { c -> if(c.moveToFirst()) { val e=entry(c);candidates[e.id]=e } }
+        }
+        for(direction in listOf("ASC","DESC"))readableDatabase.rawQuery("SELECT * FROM captures WHERE $where ORDER BY time $direction,id $direction LIMIT 1",args).use { c -> if(c.moveToFirst()) { val e=entry(c);candidates[e.id]=e } }
+        return Retrieved(candidates.values.sortedBy { it.time }.take(RetrievalPolicy.MAX_OVERVIEW),"Time-distributed overview sampled from ${bounds.third} moments; counts of retrieved excerpts are not total app usage. ${plan.scope}.")
     }
+    @Synchronized fun evidence(query:String,start:Long,end:Long,question:String)=retrieve(query,start,end,question).entries
     @Synchronized fun delete(id:Long) {
         val db=writableDatabase
         val image=db.rawQuery("SELECT image FROM captures WHERE id=?",arrayOf(id.toString())).use { if(it.moveToFirst())it.getString(0) else null } ?: return

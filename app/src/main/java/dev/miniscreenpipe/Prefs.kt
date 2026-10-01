@@ -11,10 +11,22 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 class Prefs(context: Context) {
+    private val ownPackage=context.packageName
     val p = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    init {
+        // Rescue selections written by the earlier Search picker under the wrong preference name.
+        p.getString("gemini_model",null)?.let { legacy ->
+            val edit=p.edit().remove("gemini_model")
+            if(legacy in FLASH_LITE_MODELS)edit.putString("model",legacy)
+            edit.apply()
+        }
+    }
+    fun saveModel(value:String) { require(value in FLASH_LITE_MODELS) { "Choose a supported Flash-Lite model" };p.edit().putString("model",value).remove("gemini_model").apply() }
     var recording: Boolean
         get() = p.getBoolean("recording", false)
-        set(value) { p.edit().putBoolean("recording", value).apply() }
+        // This is the user's persistent recording intent. Flush before the process
+        // can be killed, including an explicit Pause during shutdown/reconnection.
+        set(value) { p.edit().putBoolean("recording", value).commit() }
     val adaptive get() = p.getBoolean("adaptive", true)
     val redactText get() = p.getBoolean("redact_text", false)
     val blockedDomains get() = p.getString("blocked_domains", "")!!
@@ -28,8 +40,8 @@ class Prefs(context: Context) {
     val interval get() = p.getInt("interval", 30)
     val retention get() = p.getInt("retention", 7)
     val exclusions get() = p.getString("exclusions", "bank\npassword\n1password\nauthenticator\nwallet\nbitwarden\nkeepass")!!
-    val model get() = p.getString("model", "gemini-3.5-flash-lite")!!
-    fun excluded(pkg: String): Boolean = pkg in setOf("dev.miniscreenpipe", "com.android.systemui", "com.android.settings") ||
+    val model get() = p.getString("model", FLASH_LITE_MODELS.first()).takeIf { it in FLASH_LITE_MODELS } ?: FLASH_LITE_MODELS.first()
+    fun excluded(pkg: String): Boolean = pkg in setOf(ownPackage, "com.android.systemui", "com.android.settings") ||
         (onlySelected && pkg !in selectedApps) || exclusions.split('\n', ',').any { it.isNotBlank() && pkg.contains(it.trim(), ignoreCase = true) }
     private fun secret(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -51,5 +63,11 @@ class Prefs(context: Context) {
             init(Cipher.DECRYPT_MODE, secret(), GCMParameterSpec(128, Base64.decode(p.getString("iv", ""), Base64.NO_WRAP)))
         }
         return String(cipher.doFinal(Base64.decode(p.getString("key", ""), Base64.NO_WRAP)), Charsets.UTF_8)
+    }
+    companion object {
+        val FLASH_LITE_MODELS = listOf(
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite"
+        )
     }
 }

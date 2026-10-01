@@ -1,4 +1,4 @@
-# Mini Screenpipe UI — Memoria reference adaptation
+# Aevra UI — Memoria reference adaptation
 
 The supplied showcase uses hierarchy and density to make a complex recorder feel calm. Its key pattern is a nearly black canvas, subtly lighter cards, thin slate borders, violet interaction cues, and screenshots as the primary visual content. The redesign applies this consistently to the existing Android app.
 
